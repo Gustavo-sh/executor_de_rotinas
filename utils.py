@@ -4,7 +4,7 @@ from datetime import datetime
 def write_log(message):
 
     arquivo_log = (
-        Path(r"C:\Users\e.gustavo.santos.GRUPO_A&C\Documents\Projetos\11 - cascata_procedures")
+        Path(r"C:\Users\e.gustavo.santos.GRUPO_A&C\Documents\Github\executor_de_rotinas")
         / "logs"
         / f"log_etl_{datetime.now():%Y-%m-%d}.txt"
     )
