@@ -22,6 +22,20 @@ try:
 
         cursor.execute("update robbysonmatriz.dbo.sistema_matriz set meta_final = 87.7 where periodo = dateadd(d, 1, eomonth(getdate(), -1)) and atributo like '%projeto_cegonha%' and id_indicador = 901")
 
+        cursor.execute("""
+            declare @periodo date = cast((select min(periodo) from robbysonmatriz.dbo.sistema_matriz (nolock)) as date);
+
+            insert into robbysonmatriz.dbo.sistema_matriz_historico
+            select 
+                * 
+            from 
+                robbysonmatriz.dbo.sistema_matriz (nolock)
+            where
+                periodo = @periodo
+
+            delete from robbysonmatriz.dbo.sistema_matriz where periodo = @periodo
+        """)
+
         write_log("Perfis temporarios e atributos alocados manualmente finalizado com sucesso...")
 
 except pyodbc.Error as e:
