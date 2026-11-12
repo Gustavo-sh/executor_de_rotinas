@@ -15,15 +15,10 @@ use robbysonmatriz
 set nocount on
 
 if object_id('tempdb..#ids_quebra_semanal') is not null drop table #ids_quebra_semanal;
-if object_id('tempdb..#ti') is not null drop table #ti;
-if object_id('tempdb..#ids_desconsiderar') is not null drop table #ids_desconsiderar;
 if object_id('tempdb..#fi') is not null drop table #fi;
-if object_id('tempdb..#limites_indicadores') is not null drop table #limites_indicadores;
+if object_id('tempdb..#ids_desconsiderar') is not null drop table #ids_desconsiderar;
 if object_id('tempdb..#im') is not null drop table #im;
-if object_id('tempdb..#formulas') is not null drop table #formulas;
-if object_id('tempdb..#agg') is not null drop table #agg;
-if object_id('tempdb..#base') is not null drop table #base;
-if object_id('tempdb..#atingimento') is not null drop table #atingimento;
+if object_id('tempdb..#limites_indicadores') is not null drop table #limites_indicadores;
 
 --- indicadores com quebra semanal ----
 
@@ -39,25 +34,27 @@ having count(id_indicador) > 1
 
 -----------------
 
----- tipos indicadores ----
+---- formatos indicadores ----
 
 select 
-    id_indicador,
-    formula_meta,
-    indicador_nome,
-    case when formula_perc_atingimento like '%meta/resultado%' then 'menor melhor'
-    when formula_perc_atingimento like '%resultado/meta%' then 'maior melhor'
-    when formula_perc_atingimento is null then 'nenhum'
-    else 'maior melhor' end as tipo
-into #ti
-from robbyson.rby.indicador (nolock)
-where formula_perc_atingimento is not null
+    fi.id_indicador, 
+    fi.indicador as nome_indicador,
+    fi.id_formato,
+    case when 
+        fi.formato = 'coin' then 'integer' 
+        else fi.formato 
+    end as formato,
+    ti.formula_meta
+into #fi
+from robbyson.dbo.rby_indicador (nolock) fi
+left join robbyson.rby.indicador (nolock) ti on ti.id_indicador = fi.id_indicador
+where fi.formato is not null
 
 --------
 
 ---- ids desconsiderar ----
 
-select *
+select distinct *
 into #ids_desconsiderar
 from (values
     (6,'fixos'),
@@ -66,39 +63,30 @@ from (values
     (48,'fixos'),
     (49,'fixos')
 ) v(id_indicador, tipo_desconsiderar)
+
 union all
+
 select 
     id_indicador,
     'meta_mis' as tipo_desconsiderar
-from #ti ti
-where formula_meta not like '%fatorcalc%' and formula_meta not like '%meta%' and indicador_nome <> 'descontinuado'
+from #fi fi
+where formula_meta not like '%fatorcalc%' and formula_meta not like '%meta%' and nome_indicador <> 'descontinuado'
+
 union all
+
 select distinct 
     id_indicador,
     'pausa' as tipo_desconsiderar
-from #ti ti
-where indicador_nome like '%pausa%'
+from #fi fi
+where nome_indicador like '%pausa%'
+
 union all
+
 select distinct 
     id_indicador,
     'ids_tipo_horario' as tipo_desconsiderar
 from robbyson.rby.indicador (nolock)
 where tipo_medida_indicador = 'admin_generic_hour'
-
---------
-
----- formatos indicadores ----
-
-select 
-    id_indicador, 
-    id_formato,
-    case when 
-        formato = 'coin' then 'integer' 
-        else formato 
-    end as formato 
-into #fi
-from robbyson.dbo.rby_indicador (nolock) 
-where formato is not null
 
 --------
 
@@ -131,101 +119,6 @@ create index ix_im on #im (id_indicador, atributo);
 
 --------
 
----- atingimento e meta dos ultimos 3 meses fechados ----
-
-select
-    id_indicador,
-    id_formula_resultado,
-    id_formula_meta,
-    id_formula_atingimento
-into #formulas
-from robbyson.dbo.rby_indicador (nolock)
-
-SELECT
-    id_indicador,
-    segmento,
-    SUM(resultado)  AS s_resultado,
-    SUM(fator)      AS s_fator,
-    SUM(fator_2)    AS s_fator2,
-    SUM(fator_3)    AS s_fator3,
-    SUM(fator_4)    AS s_fator4,
-    SUM(meta)       AS s_meta,
-    count(chave_externa)         AS s_hc
-
-INTO #agg
-FROM robbyson.rby.performance (NOLOCK)
-WHERE data >= dateadd(d, 1, eomonth(getdate(), -4)) and data < dateadd(d, 1, eomonth(getdate(), -1))
-AND id_indicador not in (select id_indicador from #ids_desconsiderar)
-GROUP BY
-    id_indicador,
-    segmento
-
-SELECT
-    a.id_indicador,
-    a.segmento,
-    f.id_formula_atingimento,
-    a.s_hc,
-
-    CASE 
-        WHEN id_formula_resultado = 2 THEN s_resultado
-        WHEN id_formula_resultado = 3 THEN iif(s_fator = 0, 0, s_resultado / s_fator)
-        WHEN id_formula_resultado = 5 THEN iif((s_fator = 0 or s_fator3 = 0), 0, (s_resultado / s_fator) - (s_fator2 / s_fator3))
-        WHEN id_formula_resultado = 6 THEN iif(s_fator2 = 0, 0, s_resultado / s_fator2)
-        WHEN id_formula_resultado = 7 THEN IIF(s_resultado = 0, 0, s_fator / s_resultado)
-        WHEN id_formula_resultado = 8 THEN iif(s_fator = 0, 0, 1 - (s_resultado / s_fator))
-        WHEN id_formula_resultado = 9 THEN iif((s_fator2 = 0 or s_fator3 = 0), 0, ((s_resultado / s_fator2) - (s_fator2 / s_fator3)) * 100)
-        WHEN id_formula_resultado = 10 THEN iif((s_fator = 0 or s_fator3 = 0), 0, (s_resultado / s_fator) + (s_fator2 / s_fator3))
-        WHEN id_formula_resultado = 11 THEN IIF((s_fator = 0 OR s_fator4 > s_fator or s_fator2 = 0),0,(s_resultado/(s_fator2/s_fator))*(1-(s_fator3/s_fator)))
-        WHEN id_formula_resultado = 12 THEN iif(s_fator2 = 0, 0, (s_resultado - s_fator) / s_fator2)
-        WHEN id_formula_resultado = 13 THEN iif(s_fator = 0, 0, (s_resultado / s_fator) - (s_fator2 / s_fator))
-        when id_formula_resultado = 14 THEN s_fator - s_resultado
-        when id_formula_resultado = 15 THEN iif((s_fator = 0 or s_fator3 = 0 or s_fator2 = 0), 0, (s_resultado / s_fator)/(s_fator2 / s_fator3))
-    END AS resultado,
-
-    CASE
-        WHEN id_formula_meta = 1  THEN iif(s_hc = 0,0, s_meta / s_hc)
-        WHEN id_formula_meta = 2  THEN iif(s_fator2 = 0,0,s_fator / s_fator2)
-        WHEN id_formula_meta = 3  THEN s_fator4
-        WHEN id_formula_meta = 4  THEN IIF(s_fator3 = 0,0,s_fator4 / s_fator3)
-        WHEN id_formula_meta = 5  THEN IIF(s_hc = 0,0,s_meta / s_hc)
-        WHEN id_formula_meta = 6  THEN s_fator2
-        WHEN id_formula_meta = 7  THEN IIF(s_fator = 0,0,s_meta / s_fator)
-        WHEN id_formula_meta = 8  THEN IIF(s_fator2 = 0,0,s_meta / s_fator2)
-        WHEN id_formula_meta = 9  THEN IIF(s_fator4 = 0,0,s_meta / s_fator4)
-        WHEN id_formula_meta = 10 THEN IIF(s_fator = 0,0,s_fator2 / s_fator)
-        WHEN id_formula_meta = 11 THEN IIF(s_fator3 = 0,0,s_fator2 / s_fator3)
-    END AS meta
-
-INTO #base
-FROM #agg a
-left join #formulas f on a.id_indicador = f.id_indicador
-
-SELECT DISTINCT
-    segmento as atributo,
-    b.id_indicador,
-    resultado,
-    case when
-        fi.id_formato = 3 then meta * 100
-    else meta end as meta,
-    CASE 
-        WHEN id_formula_atingimento = 2 THEN IIF(resultado = 0, 10, meta/resultado)
-        WHEN id_formula_atingimento = 3 THEN IIF(meta = 0 OR resultado <= 0, 0, resultado/meta)
-        WHEN id_formula_atingimento = 4 THEN IIF(resultado > meta, meta/resultado, resultado/meta)
-        WHEN id_formula_atingimento = 6 THEN IIF(meta = -1, 0, (resultado+1)/(meta+1))
-        WHEN id_formula_atingimento = 7 THEN IIF(meta > 0.00001, resultado/meta,IIF(resultado = 0, 1, resultado/meta))
-        WHEN id_formula_atingimento = 8 THEN iif(meta = 0, 0, IIF(resultado/meta >= 1, 0, resultado/meta))
-        WHEN id_formula_atingimento = 9 THEN IIF(resultado >= 0, 10, meta/resultado)
-        when id_formula_atingimento = 10 THEN IIF(meta = 0, 0, IIF(resultado > meta, meta/resultado, resultado/meta))
-        WHEN id_formula_atingimento = 11 THEN IIF((resultado = 0 OR meta = 0), 0, meta/resultado)
-        ELSE NULL
-    END AS atingimento
-into #atingimento
-FROM #base b
-left join #fi fi
-    on fi.id_indicador = b.id_indicador
-
---------
-
 ---- limites inferior e superior ----
 
 select *
@@ -237,65 +130,63 @@ from (values
 --------
 
 ---- query final ----
-insert into dbo.meta_variacao_sistema_matriz
+insert into robbysonmatriz.dbo.meta_variacao_sistema_matriz
 select distinct
     cast(getdate() as date) as data_insercao,
     im.periodo,
     im.atributo,
     im.id_indicador,
-    ti.indicador_nome as nome_indicador,
+    fi.nome_indicador,
     fi.formato as formato_indicador,
-    ti.tipo as tipo_indicador,
-    cast(atng.meta as decimal(10,2)) as meta,
-    round(atng.atingimento, 2) as atingimento,
+    dh.tipo_indicador,
+    cast(dh.meta as decimal(10,2)) as meta,
+    round(dh.atingimento, 2) as atingimento,
     f.fator,
     im.pode_facilitar,
     case 
         when lim.id_indicador is not null then
             case 
-                when (atng.meta * f.fator) > lim.faixa_superior 
+                when (dh.meta * f.fator) > lim.faixa_superior 
                     then cast(lim.faixa_superior as decimal(10,2))
-                when (atng.meta * f.fator) < lim.faixa_inferior 
+                when (dh.meta * f.fator) < lim.faixa_inferior 
                     then cast(lim.faixa_inferior as decimal(10,2))
                 else 
                     cast(round(
-                        cast(atng.meta as decimal(18,2)) * f.fator
+                        cast(dh.meta as decimal(18,2)) * f.fator
                     ,2) as decimal(10,2))
             end
         else 
             case 
                 when fi.formato = 'integer' 
-                    then cast(round(atng.meta * f.fator, 0) as decimal(10,2))
+                    then cast(round(dh.meta * f.fator, 0) as decimal(10,2))
                 else 
                     cast(round(
-                        cast(atng.meta as decimal(18,2)) * f.fator
+                        cast(dh.meta as decimal(18,2)) * f.fator
                     ,2) as decimal(10,2))
             end
     end as meta_variacao
 from #im im
-left join #ti ti
-    on ti.id_indicador = im.id_indicador
 left join #fi fi
     on fi.id_indicador = im.id_indicador
-left join #atingimento atng
-    on atng.atributo = im.atributo
-   and atng.id_indicador = im.id_indicador
+left join robbyson.dbo.dados_historicos_sistema_matriz (nolock) dh
+    on dh.atributo = im.atributo
+   and dh.id_indicador = im.id_indicador
 left join #limites_indicadores lim
     on lim.id_indicador = im.id_indicador
 cross apply (
     select 
         cast(
             case 
-                when isnull(atng.atingimento, 0) >= 1 then 
+                when isnull(dh.atingimento, 0) >= 1 then 
                     case 
-                        when ti.tipo = 'maior melhor' then 1.015
+                        when dh.tipo_indicador = 'maior melhor' then 1.015
                         else 0.985
                     end
                 else 
                     case 
                         when im.pode_facilitar = 1 then 
                             case 
-                                when ti.tipo = 'maior melhor' then 0.985
+                                when dh.tipo_indicador = 'maior melhor' then 0.985
                                 else 1.015
                             end
                         else 1.000
@@ -303,7 +194,7 @@ cross apply (
             end 
         as decimal(6,3)) as fator
 ) f
-where atingimento is not null
+where dh.atingimento is not null
 and im.atributo not in (select distinct atributo from robbysonmatriz.dbo.publico_piloto_sistema_matriz (nolock))
 and not exists (
     select 1
@@ -313,16 +204,11 @@ and not exists (
 )
 
 
-drop table #ti
-drop table #ids_desconsiderar
-drop table #fi
-drop table #limites_indicadores
-drop table #im
-drop table #formulas
-drop table #agg
-drop table #base
-drop table #atingimento
 drop table #ids_quebra_semanal
+drop table #fi
+drop table #ids_desconsiderar
+drop table #im
+drop table #limites_indicadores
 """
 
 META_VARIACAO_SISTEMA_MATRIZ = """
@@ -331,15 +217,11 @@ use robbysonmatriz
 set nocount on
 
 if object_id('tempdb..#ids_quebra_semanal') is not null drop table #ids_quebra_semanal;
-if object_id('tempdb..#ti') is not null drop table #ti;
-if object_id('tempdb..#ids_desconsiderar') is not null drop table #ids_desconsiderar;
 if object_id('tempdb..#fi') is not null drop table #fi;
-if object_id('tempdb..#limites_indicadores') is not null drop table #limites_indicadores;
+if object_id('tempdb..#ids_desconsiderar') is not null drop table #ids_desconsiderar;
 if object_id('tempdb..#sm') is not null drop table #sm;
-if object_id('tempdb..#formulas') is not null drop table #formulas;
-if object_id('tempdb..#agg') is not null drop table #agg;
-if object_id('tempdb..#base') is not null drop table #base;
-if object_id('tempdb..#atingimento') is not null drop table #atingimento;
+if object_id('tempdb..#limites_indicadores') is not null drop table #limites_indicadores;
+
 
 --- indicadores com quebra semanal ----
 
@@ -355,19 +237,21 @@ having count(id_indicador) > 1
 
 -----------------
 
----- tipos indicadores ----
+---- formatos indicadores ----
 
 select 
-    id_indicador,
-    formula_meta,
-    indicador_nome,
-    case when formula_perc_atingimento like '%meta/resultado%' then 'menor melhor'
-    when formula_perc_atingimento like '%resultado/meta%' then 'maior melhor'
-    when formula_perc_atingimento is null then 'nenhum'
-    else 'maior melhor' end as tipo
-into #ti
-from robbyson.rby.indicador (nolock)
-where formula_perc_atingimento is not null
+    fi.id_indicador, 
+    fi.indicador as nome_indicador,
+    fi.id_formato,
+    case when 
+        fi.formato = 'coin' then 'integer' 
+        else fi.formato 
+    end as formato,
+    ti.formula_meta
+into #fi
+from robbyson.dbo.rby_indicador (nolock) fi
+left join robbyson.rby.indicador (nolock) ti on ti.id_indicador = fi.id_indicador
+where fi.formato is not null
 
 --------
 
@@ -382,39 +266,30 @@ from (values
     (48,'fixos'),
     (49,'fixos')
 ) v(id_indicador, tipo_desconsiderar)
+
 union all
+
 select 
     id_indicador,
     'meta_mis' as tipo_desconsiderar
-from #ti ti
-where formula_meta not like '%fatorcalc%' and formula_meta not like '%meta%' and indicador_nome <> 'descontinuado'
+from #fi ti
+where formula_meta not like '%fatorcalc%' and formula_meta not like '%meta%' and nome_indicador <> 'descontinuado'
+
 union all
+
 select distinct 
     id_indicador,
     'pausa' as tipo_desconsiderar
-from #ti ti
-where indicador_nome like '%pausa%'
+from #fi ti
+where nome_indicador like '%pausa%'
+
 union all
+
 select distinct 
     id_indicador,
     'ids_tipo_horario' as tipo_desconsiderar
 from robbyson.rby.indicador (nolock)
 where tipo_medida_indicador = 'admin_generic_hour'
-
---------
-
----- formatos indicadores ----
-
-select 
-    id_indicador, 
-    id_formato,
-    case when 
-        formato = 'coin' then 'integer' 
-        else formato 
-    end as formato 
-into #fi
-from robbyson.dbo.rby_indicador (nolock) 
-where formato is not null
 
 --------
 
@@ -446,101 +321,6 @@ create index ix_sm on #sm (id_indicador, atributo);
 
 --------
 
----- atingimento e meta dos ultimos 3 meses fechados ----
-
-select
-    id_indicador,
-    id_formula_resultado,
-    id_formula_meta,
-    id_formula_atingimento
-into #formulas
-from robbyson.dbo.rby_indicador (nolock)
-
-SELECT
-    id_indicador,
-    segmento,
-    SUM(resultado)  AS s_resultado,
-    SUM(fator)      AS s_fator,
-    SUM(fator_2)    AS s_fator2,
-    SUM(fator_3)    AS s_fator3,
-    SUM(fator_4)    AS s_fator4,
-    SUM(meta)       AS s_meta,
-    count(chave_externa)         AS s_hc
-
-INTO #agg
-FROM robbyson.rby.performance (NOLOCK)
-WHERE data >= dateadd(d, 1, eomonth(getdate(), -4)) and data < dateadd(d, 1, eomonth(getdate(), -1))
-AND id_indicador not in (select id_indicador from #ids_desconsiderar)
-GROUP BY
-    id_indicador,
-    segmento
-
-SELECT
-    a.id_indicador,
-    a.segmento,
-    f.id_formula_atingimento,
-    a.s_hc,
-
-    CASE 
-        WHEN id_formula_resultado = 2 THEN s_resultado
-        WHEN id_formula_resultado = 3 THEN iif(s_fator = 0, 0, s_resultado / s_fator)
-        WHEN id_formula_resultado = 5 THEN iif((s_fator = 0 or s_fator3 = 0), 0, (s_resultado / s_fator) - (s_fator2 / s_fator3))
-        WHEN id_formula_resultado = 6 THEN iif(s_fator2 = 0, 0, s_resultado / s_fator2)
-        WHEN id_formula_resultado = 7 THEN IIF(s_resultado = 0, 0, s_fator / s_resultado)
-        WHEN id_formula_resultado = 8 THEN iif(s_fator = 0, 0, 1 - (s_resultado / s_fator))
-        WHEN id_formula_resultado = 9 THEN iif((s_fator2 = 0 or s_fator3 = 0), 0, ((s_resultado / s_fator2) - (s_fator2 / s_fator3)) * 100)
-        WHEN id_formula_resultado = 10 THEN iif((s_fator = 0 or s_fator3 = 0), 0, (s_resultado / s_fator) + (s_fator2 / s_fator3))
-        WHEN id_formula_resultado = 11 THEN IIF((s_fator = 0 OR s_fator4 > s_fator or s_fator2 = 0),0,(s_resultado/(s_fator2/s_fator))*(1-(s_fator3/s_fator)))
-        WHEN id_formula_resultado = 12 THEN iif(s_fator2 = 0, 0, (s_resultado - s_fator) / s_fator2)
-        WHEN id_formula_resultado = 13 THEN iif(s_fator = 0, 0, (s_resultado / s_fator) - (s_fator2 / s_fator))
-        when id_formula_resultado = 14 THEN s_fator - s_resultado
-        when id_formula_resultado = 15 THEN iif((s_fator = 0 or s_fator3 = 0 or s_fator2 = 0), 0, (s_resultado / s_fator)/(s_fator2 / s_fator3))
-    END AS resultado,
-
-    CASE
-        WHEN id_formula_meta = 1  THEN iif(s_hc = 0,0, s_meta / s_hc)
-        WHEN id_formula_meta = 2  THEN iif(s_fator2 = 0,0,s_fator / s_fator2)
-        WHEN id_formula_meta = 3  THEN s_fator4
-        WHEN id_formula_meta = 4  THEN IIF(s_fator3 = 0,0,s_fator4 / s_fator3)
-        WHEN id_formula_meta = 5  THEN IIF(s_hc = 0,0,s_meta / s_hc)
-        WHEN id_formula_meta = 6  THEN s_fator2
-        WHEN id_formula_meta = 7  THEN IIF(s_fator = 0,0,s_meta / s_fator)
-        WHEN id_formula_meta = 8  THEN IIF(s_fator2 = 0,0,s_meta / s_fator2)
-        WHEN id_formula_meta = 9  THEN IIF(s_fator4 = 0,0,s_meta / s_fator4)
-        WHEN id_formula_meta = 10 THEN IIF(s_fator = 0,0,s_fator2 / s_fator)
-        WHEN id_formula_meta = 11 THEN IIF(s_fator3 = 0,0,s_fator2 / s_fator3)
-    END AS meta
-
-INTO #base
-FROM #agg a
-left join #formulas f on a.id_indicador = f.id_indicador
-
-SELECT DISTINCT
-    segmento as atributo,
-    b.id_indicador,
-    resultado,
-    case when
-        fi.id_formato = 3 then meta * 100
-    else meta end as meta,
-    CASE 
-        WHEN id_formula_atingimento = 2 THEN IIF(resultado = 0, 10, meta/resultado)
-        WHEN id_formula_atingimento = 3 THEN IIF(meta = 0 OR resultado <= 0, 0, resultado/meta)
-        WHEN id_formula_atingimento = 4 THEN IIF(resultado > meta, meta/resultado, resultado/meta)
-        WHEN id_formula_atingimento = 6 THEN IIF(meta = -1, 0, (resultado+1)/(meta+1))
-        WHEN id_formula_atingimento = 7 THEN IIF(meta > 0.00001, resultado/meta,IIF(resultado = 0, 1, resultado/meta))
-        WHEN id_formula_atingimento = 8 THEN iif(meta = 0, 0, IIF(resultado/meta >= 1, 0, resultado/meta))
-        WHEN id_formula_atingimento = 9 THEN IIF(resultado >= 0, 10, meta/resultado)
-        when id_formula_atingimento = 10 THEN IIF(meta = 0, 0, IIF(resultado > meta, meta/resultado, resultado/meta))
-        WHEN id_formula_atingimento = 11 THEN IIF((resultado = 0 OR meta = 0), 0, meta/resultado)
-        ELSE NULL
-    END AS atingimento
-into #atingimento
-FROM #base b
-left join #fi fi
-    on fi.id_indicador = b.id_indicador
-
---------
-
 ---- limites inferior e superior ----
 
 select *
@@ -558,59 +338,59 @@ select distinct
     sm.periodo,
     sm.atributo,
     sm.id_indicador,
-    ti.indicador_nome as nome_indicador,
+    fi.nome_indicador,
     fi.formato as formato_indicador,
-    ti.tipo as tipo_indicador,
-    cast(atng.meta as decimal(10,2)) as meta,
-    round(atng.atingimento, 2) as atingimento,
+    dh.tipo_indicador,
+    cast(dh.meta as decimal(10,2)) as meta,
+    round(dh.atingimento, 2) as atingimento,
     f.fator,
     sm.pode_facilitar,
     case 
         when lim.id_indicador is not null then
             case 
-                when (atng.meta * f.fator) > lim.faixa_superior 
+                when (dh.meta * f.fator) > lim.faixa_superior 
                     then cast(lim.faixa_superior as decimal(10,2))
-                when (atng.meta * f.fator) < lim.faixa_inferior 
+                when (dh.meta * f.fator) < lim.faixa_inferior 
                     then cast(lim.faixa_inferior as decimal(10,2))
                 else 
                     cast(round(
-                        cast(atng.meta as decimal(18,2)) * f.fator
+                        cast(dh.meta as decimal(18,2)) * f.fator
                     ,2) as decimal(10,2))
             end
         else 
             case 
                 when fi.formato = 'integer' 
-                    then cast(round(atng.meta * f.fator, 0) as decimal(10,2))
+                    then cast(round(dh.meta * f.fator, 0) as decimal(10,2))
                 else 
                     cast(round(
-                        cast(atng.meta as decimal(18,2)) * f.fator
+                        cast(dh.meta as decimal(18,2)) * f.fator
                     ,2) as decimal(10,2))
             end
     end as meta_variacao
 from #sm sm
-left join #ti ti
+left join #fi ti
     on ti.id_indicador = sm.id_indicador
 left join #fi fi
     on fi.id_indicador = sm.id_indicador
-left join #atingimento atng
-    on atng.atributo = sm.atributo
-   and atng.id_indicador = sm.id_indicador
+left join robbyson.dbo.dados_historicos_sistema_matriz (nolock) dh
+    on dh.atributo = sm.atributo
+   and dh.id_indicador = sm.id_indicador
 left join #limites_indicadores lim
     on lim.id_indicador = sm.id_indicador
 cross apply (
     select 
         cast(
             case 
-                when isnull(atng.atingimento, 0) >= 1 then 
+                when isnull(dh.atingimento, 0) >= 1 then 
                     case 
-                        when ti.tipo = 'maior melhor' then 1.015
+                        when dh.tipo_indicador = 'maior melhor' then 1.015
                         else 0.985
                     end
                 else 
                     case 
                         when sm.pode_facilitar = 1 then 
                             case 
-                                when ti.tipo = 'maior melhor' then 0.985
+                                when dh.tipo_indicador = 'maior melhor' then 0.985
                                 else 1.015
                             end
                         else 1.000
@@ -618,7 +398,7 @@ cross apply (
             end 
         as decimal(6,3)) as fator
 ) f
-where atingimento is not null
+where dh.atingimento is not null
 and sm.atributo in (select distinct atributo from robbysonmatriz.dbo.publico_piloto_sistema_matriz (nolock))
 and not exists (
     select 1
@@ -629,15 +409,10 @@ and not exists (
 
 
 drop table #ids_quebra_semanal
-drop table #ti
-drop table #ids_desconsiderar
 drop table #fi
-drop table #limites_indicadores
+drop table #ids_desconsiderar
 drop table #sm
-drop table #formulas
-drop table #agg
-drop table #base
-drop table #atingimento
+drop table #limites_indicadores
 """
 
 REPLICADOR_IMPORT_MATRIZ = """
