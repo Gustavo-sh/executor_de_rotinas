@@ -905,7 +905,7 @@ select
     sm.tipo_indicador,
     sm.acumulado,
     sm.esquema_acumulado,
-    dateadd(d, 1, eomonth(getdate(), 0)) as data_inicio,
+    dateadd(month, 1, sm.data_inicio) as data_inicio,
     case when 
         (day(sm.data_fim) = 28 or day(sm.data_fim) = 30 or day(sm.data_fim) = 31) 
             then eomonth(dateadd(month, 1, sm.data_fim))
@@ -1038,10 +1038,18 @@ try:
         write_log(f"Erro na META_VARIACAO_IMPORT_MATRIZ: {repr(e)}")
         conn.rollback()
         raise
+    except pyodbc.Error as e:
+        write_log(f"ERRO PYODBC na META_VARIACAO_IMPORT_MATRIZ: {repr(e)}")
+        conn.rollback()
+        raise
     try:
         cursor.execute(META_VARIACAO_SISTEMA_MATRIZ)
     except Exception as e:
         write_log(f"Erro na META_VARIACAO_SISTEMA_MATRIZ: {repr(e)}")
+        conn.rollback()
+        raise
+    except pyodbc.Error as e:
+        write_log(f"ERRO PYODBC na META_VARIACAO_SISTEMA_MATRIZ: {repr(e)}")
         conn.rollback()
         raise
     try:
@@ -1050,10 +1058,18 @@ try:
         write_log(f"Erro na REPLICADOR_IMPORT_MATRIZ: {repr(e)}")
         conn.rollback()
         raise
+    except pyodbc.Error as e:
+        write_log(f"ERRO PYODBC na REPLICADOR_IMPORT_MATRIZ: {repr(e)}")
+        conn.rollback()
+        raise
     try:
         cursor.execute(REPLICADOR_SISTEMA_MATRIZ)
     except Exception as e:
         write_log(f"Erro na REPLICADOR_SISTEMA_MATRIZ: {repr(e)}")
+        conn.rollback()
+        raise
+    except pyodbc.Error as e:
+        write_log(f"ERRO PYODBC na REPLICADOR_SISTEMA_MATRIZ: {repr(e)}")
         conn.rollback()
         raise
 
